@@ -1,0 +1,42 @@
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+env/
+.env
+
+# Logs
+*.log
+bot.log
+
+# Heroku
+*.pyc
+staticfiles/
+
+# IDE specific files
+.vscode/
+.idea/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+
+# Database files
+*.sqlite3
+
+# Sensitive information
+.env
+
+# Dependency directories
+node_modules/
+
+# Distribution / packaging
+.Python
