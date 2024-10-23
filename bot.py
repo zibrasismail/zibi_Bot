@@ -42,6 +42,9 @@ async def main():
         application.add_handler(CommandHandler("start", start))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
+        # Initialize the application first
+        await application.initialize()
+
         # Check if we're running on Railway
         if os.getenv('RAILWAY_PUBLIC_DOMAIN'):
             # Production mode (Railway)
@@ -56,6 +59,13 @@ async def main():
                 allowed_updates=Update.ALL_TYPES
             )
             
+            # Log webhook info
+            webhook_info = await application.bot.get_webhook_info()
+            print(f"Webhook info:")
+            print(f"  URL: {webhook_info.url}")
+            print(f"  Pending updates: {webhook_info.pending_update_count}")
+            print(f"  IP Address: {webhook_info.ip_address}")
+            
             print(f"Starting webhook server on port {port}")
             await application.start()
             print("Bot is running...")
@@ -63,7 +73,9 @@ async def main():
                 listen="0.0.0.0",
                 port=port,
                 url_path="webhook",
-                webhook_url=webhook_url
+                webhook_url=webhook_url,
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True
             )
         else:
             # Local development mode
