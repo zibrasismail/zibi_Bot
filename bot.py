@@ -77,6 +77,9 @@ async def main():
             print("Deleting existing webhook...")
             await application.bot.delete_webhook(drop_pending_updates=True)
             
+            # Remove trailing slash from railway_domain if it exists
+            railway_domain = railway_domain.rstrip('/')
+            
             # Set the new webhook
             webhook_url = f"{railway_domain}/webhook"
             print(f"Setting up webhook: {webhook_url}")
@@ -97,8 +100,9 @@ async def main():
             await application.run_webhook(
                 listen="0.0.0.0",
                 port=port,
-                url_path="webhook",  # Add this line
-                webhook_url=webhook_url
+                url_path="webhook",
+                webhook_url=webhook_url,
+                allowed_updates=Update.ALL_TYPES
             )
         else:
             # Local development mode
