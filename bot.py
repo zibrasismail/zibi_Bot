@@ -70,18 +70,16 @@ async def main():
             await application.initialize()
             await application.start()
             
-            # Set up and start webhook
+            # Run webhook
             print("Starting webhook...")
-            await application.updater.start_webhook(
+            await application.run_webhook(
                 listen="0.0.0.0",
                 port=port,
                 url_path="webhook",
                 webhook_url=webhook_url,
+                allowed_updates=Update.ALL_TYPES,
                 drop_pending_updates=True
             )
-            
-            print("Webhook is running...")
-            await stop_event.wait()
             
         else:
             # Local development mode
@@ -126,22 +124,28 @@ def handle_interrupt():
 
 if __name__ == '__main__':
     try:
+        # Create new event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
         # Set up signal handlers based on platform
         if sys.platform == 'win32':
-            # Windows signal handling
-            signal.signal(signal.SIGINT, lambda s, f: handle_interrupt())
+            signal.signal(signal.SIGINT, lambda s, f: loop.create_task(shutdown()))
         else:
-            # Unix signal handling
-            loop = asyncio.get_event_loop()
             for s in (signal.SIGTERM, signal.SIGINT):
                 loop.add_signal_handler(
-                    s, lambda s=s: asyncio.create_task(shutdown(signal=s))
+                    s, lambda s=s: loop.create_task(shutdown(signal=s))
                 )
         
         # Run the bot
-        asyncio.run(main())
+        loop.run_until_complete(main())
     except KeyboardInterrupt:
         print("\nBot stopped by user")
     except Exception as e:
         print(f"Fatal error: {e}")
         logger.error(f"Fatal error: {e}", exc_info=True)
+    finally:
+        try:
+            loop.close()
+        except:
+            pass
