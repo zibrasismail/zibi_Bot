@@ -1,6 +1,7 @@
 import logging
 import asyncio
 import os
+import signal
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from config import TELEGRAM_BOT_TOKEN, DATABASE_URL
@@ -42,9 +43,6 @@ async def main():
         application.add_handler(CommandHandler("start", start))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-        # Initialize the application first
-        await application.initialize()
-
         # Check if we're running on Railway
         if os.getenv('RAILWAY_PUBLIC_DOMAIN'):
             # Production mode (Railway)
@@ -64,19 +62,28 @@ async def main():
             print(f"Webhook info:")
             print(f"  URL: {webhook_info.url}")
             print(f"  Pending updates: {webhook_info.pending_update_count}")
-            print(f"  IP Address: {webhook_info.ip_address}")
             
             print(f"Starting webhook server on port {port}")
-            await application.start()
-            print("Bot is running...")
-            await application.run_webhook(
+            
+            # Initialize first
+            await application.initialize()
+            
+            # Create webhook app
+            from telegram.ext._utils.webhookhandler import WebhookServer
+            webhook_app = WebhookServer(
                 listen="0.0.0.0",
                 port=port,
                 url_path="webhook",
-                webhook_url=webhook_url,
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True
+                webhook_url=webhook_url
             )
+            
+            # Start the application
+            await application.start()
+            
+            # Run the webhook
+            async with webhook_app:
+                await webhook_app.serve_forever()
+                
         else:
             # Local development mode
             print("Starting polling mode...")
@@ -105,7 +112,7 @@ async def main():
         # Cleanup
         print("\nShutting down...")
         try:
-            if 'application' in locals():
+            if 'application' in locals() and application.running:
                 await application.stop()
         except Exception as e:
             logger.error(f"Error stopping application: {e}")
@@ -123,14 +130,35 @@ def handle_interrupt():
 
 if __name__ == '__main__':
     try:
-        # Set up interrupt handler
-        import signal
-        signal.signal(signal.SIGINT, lambda s, f: handle_interrupt())
+        # Set up signal handlers
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         
+        # Handle signals
+        signals = (signal.SIGTERM, signal.SIGINT)
+        for s in signals:
+            loop.add_signal_handler(
+                s, lambda s=s: asyncio.create_task(shutdown(loop, signal=s))
+            )
+            
         # Run the bot
-        asyncio.run(main())
+        loop.run_until_complete(main())
     except KeyboardInterrupt:
         print("\nBot stopped by user")
     except Exception as e:
         print(f"Fatal error: {e}")
         logger.error(f"Fatal error: {e}", exc_info=True)
+    finally:
+        loop.close()
+
+async def shutdown(loop, signal=None):
+    """Cleanup tasks tied to the service's shutdown."""
+    if signal:
+        logger.info(f"Received exit signal {signal.name}")
+    
+    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+    [task.cancel() for task in tasks]
+    
+    logger.info(f"Cancelling {len(tasks)} outstanding tasks")
+    await asyncio.gather(*tasks, return_exceptions=True)
+    loop.stop()
