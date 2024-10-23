@@ -7,151 +7,118 @@ from config import TELEGRAM_BOT_TOKEN, DATABASE_URL
 from database import create_pool, create_messages_table
 from handlers import start, handle_message
 from utils import create_message_cache
-# import sentry_sdk
-# from sentry_sdk.integrations.asyncio import AsyncioIntegration
-from aiohttp import web
 
 # Set up logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.DEBUG,  # Change to DEBUG for more detailed logs
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Add a file handler
-file_handler = logging.FileHandler('bot.log')
-file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-logger.addHandler(file_handler)
+# Create a stop event
+stop_event = asyncio.Event()
 
-# Initialize Sentry
-# sentry_sdk.init(
-#     dsn=SENTRY_DSN,
-#     integrations=[AsyncioIntegration()],
-#     traces_sample_rate=1.0
-# )
-
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.error("Exception while handling an update:", exc_info=context.error)
-    # sentry_sdk.capture_exception(context.error)
-
-async def log_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.debug(f"Received update: {update}")
-
-async def health_check(request):
-    return web.Response(text='OK', status=200)
-
-async def webhook_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    try:
-        logger.info(f"Received webhook update: {update}")
-        if update.message:
-            logger.info(f"Processing message: {update.message.text}")
-            await handle_message(update, context)
-            logger.info("Message processed successfully")
-    except Exception as e:
-        logger.error(f"Error in webhook handler: {e}", exc_info=True)
-    finally:
-        return web.Response(status=200)
+async def stop_signal_handler():
+    """Handle stop signals"""
+    stop_event.set()
 
 async def main():
     try:
-        print("Starting the bot...")
-        logger.info("Bot is initializing...")
+        # Initialize bot
+        print("Starting bot...")
+        application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
         # Initialize database
         print("Connecting to database...")
         db_pool = await create_pool()
         await create_messages_table(db_pool)
-        print("Database connected and table created.")
+        print("Database connected")
 
-        # Initialize application
-        print("Initializing Telegram bot application...")
-        application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+        # Set up bot data
         application.bot_data['db_pool'] = db_pool
         application.bot_data['message_cache'] = create_message_cache()
 
         # Add handlers
-        application.add_handler(MessageHandler(filters.ALL, log_update), group=-1)  # Log all updates
         application.add_handler(CommandHandler("start", start))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        application.add_error_handler(error_handler)
-        print("Handlers added successfully")
-
-        # Initialize the application
-        await application.initialize()
 
         # Check if we're running on Railway
-        railway_domain = os.getenv('RAILWAY_PUBLIC_DOMAIN')
-        port = int(os.getenv('PORT', '8080'))
-
-        if railway_domain:
+        if os.getenv('RAILWAY_PUBLIC_DOMAIN'):
             # Production mode (Railway)
-            print(f"Running in production mode")
-            print(f"Railway domain: {railway_domain}")
-            print(f"Port: {port}")
-            
-            # Delete any existing webhook first
-            print("Deleting existing webhook...")
-            await application.bot.delete_webhook(drop_pending_updates=True)
-            
-            # Remove trailing slash from railway_domain if it exists
-            railway_domain = railway_domain.rstrip('/')
-            
-            # Set the new webhook
+            railway_domain = os.getenv('RAILWAY_PUBLIC_DOMAIN').rstrip('/')
+            port = int(os.getenv('PORT', '8080'))
             webhook_url = f"{railway_domain}/webhook"
-            print(f"Setting up webhook: {webhook_url}")
             
+            print(f"Setting up webhook at {webhook_url}")
+            await application.bot.delete_webhook(drop_pending_updates=True)
             await application.bot.set_webhook(
                 url=webhook_url,
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True
+                allowed_updates=Update.ALL_TYPES
             )
             
-            # Verify webhook
-            webhook_info = await application.bot.get_webhook_info()
-            print(f"Webhook info: {webhook_info.url}")
-            
-            # Start the webhook server
             print(f"Starting webhook server on port {port}")
-            app = web.Application()
-            app.router.add_get('/health', health_check)
-            app.router.add_post('/webhook', webhook_handler)
-            
-            print("Starting webhook server...")
+            await application.start()
+            print("Bot is running...")
             await application.run_webhook(
                 listen="0.0.0.0",
                 port=port,
                 url_path="webhook",
-                webhook_url=webhook_url,
-                allowed_updates=Update.ALL_TYPES,
-                webhook_app=app
+                webhook_url=webhook_url
             )
         else:
             # Local development mode
-            print("Running in local mode (polling)")
+            print("Starting polling mode...")
             await application.bot.delete_webhook(drop_pending_updates=True)
+            print("Bot is starting...")
+            await application.initialize()
             await application.start()
-            await application.run_polling(drop_pending_updates=True)
+            print("Bot is running...")
+            
+            # Start polling in the background
+            asyncio.create_task(application.updater.start_polling(drop_pending_updates=True))
+            
+            print("Bot is ready to handle messages...")
+            print("Press Ctrl+C to stop the bot")
+            
+            # Wait for stop signal
+            try:
+                await stop_event.wait()
+            except asyncio.CancelledError:
+                pass
 
     except Exception as e:
-        logger.error(f"Error in main: {e}", exc_info=True)
+        logger.error(f"Error: {e}", exc_info=True)
         raise
     finally:
         # Cleanup
-        if 'application' in locals():
-            await application.stop()
-            await application.shutdown()
-        if 'db_pool' in locals():
-            await db_pool.close()
+        print("\nShutting down...")
+        try:
+            if 'application' in locals():
+                await application.stop()
+        except Exception as e:
+            logger.error(f"Error stopping application: {e}")
+        
+        try:
+            if 'db_pool' in locals():
+                await db_pool.close()
+        except Exception as e:
+            logger.error(f"Error closing database: {e}")
+        print("Cleanup complete")
+
+def handle_interrupt():
+    """Handle keyboard interrupt"""
+    asyncio.get_event_loop().create_task(stop_signal_handler())
 
 if __name__ == '__main__':
     try:
+        # Set up interrupt handler
+        import signal
+        signal.signal(signal.SIGINT, lambda s, f: handle_interrupt())
+        
+        # Run the bot
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("Bot stopped by user")
-        logger.info("Bot stopped by user")
+        print("\nBot stopped by user")
     except Exception as e:
-        print(f"Unhandled exception: {e}")
-        logger.error(f"Unhandled exception: {e}", exc_info=True)
-    finally:
-        print("Bot shutdown complete")
-        logger.info("Bot shutdown complete")
+        print(f"Fatal error: {e}")
+        logger.error(f"Fatal error: {e}", exc_info=True)
