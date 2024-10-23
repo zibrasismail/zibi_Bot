@@ -1,6 +1,5 @@
 import logging
 import asyncio
-import os  # Add this import
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from config import TELEGRAM_BOT_TOKEN, DATABASE_URL
@@ -56,28 +55,32 @@ async def main():
     application.add_handler(MessageHandler(filters.ALL, log_update), group=-1)  # Log all updates
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_error_handler(error_handler)
     print("Handlers added successfully")
 
-    # Set up webhook
-    port = int(os.getenv('PORT', 8080))
-    app_url = os.getenv('RAILWAY_PUBLIC_DOMAIN')
-    
-    if app_url:  # If running on Railway
-        print(f"Setting up webhook on {app_url}")
-        await application.bot.set_webhook(
-            url=f"{app_url}/webhook"
-        )
-        await application.start()
-        await application.run_webhook(
-            listen="0.0.0.0",
-            port=port,
-            webhook_url=f"{app_url}/webhook"
-        )
-    else:  # If running locally
-        print("Running in polling mode")
-        await application.bot.delete_webhook()
-        await application.run_polling()
+    # Add error handler
+    application.add_error_handler(error_handler)
+    print("Error handler added")
+
+    print("Removing webhook...")
+    await application.bot.delete_webhook()
+    print("Webhook removed")
+
+    print("Starting polling...")
+    await application.initialize()
+    await application.start()
+    print("Polling...")
+
+    # Custom polling method
+    offset = 0
+    while True:
+        try:
+            updates = await application.bot.get_updates(offset=offset, timeout=30)
+            for update in updates:
+                offset = update.update_id + 1
+                await application.process_update(update)
+        except Exception as e:
+            logger.error(f"Error in polling: {e}", exc_info=True)
+        await asyncio.sleep(1)
 
 if __name__ == '__main__':
     try:
