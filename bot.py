@@ -9,6 +9,7 @@ from handlers import start, handle_message
 from utils import create_message_cache
 # import sentry_sdk
 # from sentry_sdk.integrations.asyncio import AsyncioIntegration
+from aiohttp import web
 
 # Set up logging
 logging.basicConfig(
@@ -35,6 +36,17 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def log_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.debug(f"Received update: {update}")
+
+async def health_check(request):
+    return web.Response(text='OK', status=200)
+
+async def webhook_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        if update.message:
+            await handle_message(update, context)
+    except Exception as e:
+        logger.error(f"Error in webhook handler: {e}", exc_info=True)
+        return {"statusCode": 200}  # Always return 200 to Telegram
 
 async def main():
     try:
@@ -96,13 +108,18 @@ async def main():
             
             # Start the webhook server
             print(f"Starting webhook server on port {port}")
-            await application.start()
+            app = web.Application()
+            app.router.add_get('/health', health_check)
+            
+            application.add_handler(MessageHandler(filters.ALL, webhook_handler))
+            
             await application.run_webhook(
                 listen="0.0.0.0",
                 port=port,
                 url_path="webhook",
                 webhook_url=webhook_url,
-                allowed_updates=Update.ALL_TYPES
+                allowed_updates=Update.ALL_TYPES,
+                webhook_app=app
             )
         else:
             # Local development mode
