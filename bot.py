@@ -64,22 +64,41 @@ async def main():
         await application.initialize()
 
         # Check if we're running on Railway
-        if os.getenv('RAILWAY_PUBLIC_DOMAIN'):
+        railway_domain = os.getenv('RAILWAY_PUBLIC_DOMAIN')
+        port = int(os.getenv('PORT', '8080'))
+
+        if railway_domain:
             # Production mode (Railway)
-            port = int(os.getenv('PORT', 8080))
-            app_url = os.getenv('RAILWAY_PUBLIC_DOMAIN')
-            print(f"Setting up webhook on {app_url}")
+            print(f"Running in production mode")
+            print(f"Railway domain: {railway_domain}")
+            print(f"Port: {port}")
+            
+            # Delete any existing webhook first
+            print("Deleting existing webhook...")
+            await application.bot.delete_webhook(drop_pending_updates=True)
+            
+            # Set the new webhook
+            webhook_url = f"{railway_domain}/webhook"
+            print(f"Setting up webhook: {webhook_url}")
             
             await application.bot.set_webhook(
-                url=f"{app_url}/webhook",
+                url=webhook_url,
+                allowed_updates=Update.ALL_TYPES,
                 drop_pending_updates=True
             )
             
+            # Verify webhook
+            webhook_info = await application.bot.get_webhook_info()
+            print(f"Webhook info: {webhook_info.url}")
+            
+            # Start the webhook server
+            print(f"Starting webhook server on port {port}")
             await application.start()
             await application.run_webhook(
                 listen="0.0.0.0",
                 port=port,
-                webhook_url=f"{app_url}/webhook"
+                url_path="webhook",  # Add this line
+                webhook_url=webhook_url
             )
         else:
             # Local development mode
