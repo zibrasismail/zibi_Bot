@@ -1,6 +1,7 @@
 import logging
 import asyncio
 import os
+import sys
 import signal
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -19,8 +20,10 @@ logger = logging.getLogger(__name__)
 # Create a stop event
 stop_event = asyncio.Event()
 
-async def stop_signal_handler():
-    """Handle stop signals"""
+async def shutdown(signal=None):
+    """Cleanup tasks tied to the service's shutdown."""
+    if signal:
+        logger.info(f"Received exit signal {signal.name}")
     stop_event.set()
 
 async def main():
@@ -64,26 +67,22 @@ async def main():
             print(f"  Pending updates: {webhook_info.pending_update_count}")
             
             print(f"Starting webhook server on port {port}")
-            
-            # Initialize first
             await application.initialize()
+            await application.start()
             
-            # Create webhook app
-            from telegram.ext._utils.webhookhandler import WebhookServer
-            webhook_app = WebhookServer(
+            # Set up and start webhook
+            print("Starting webhook...")
+            await application.updater.start_webhook(
                 listen="0.0.0.0",
                 port=port,
                 url_path="webhook",
-                webhook_url=webhook_url
+                webhook_url=webhook_url,
+                drop_pending_updates=True
             )
             
-            # Start the application
-            await application.start()
+            print("Webhook is running...")
+            await stop_event.wait()
             
-            # Run the webhook
-            async with webhook_app:
-                await webhook_app.serve_forever()
-                
         else:
             # Local development mode
             print("Starting polling mode...")
@@ -100,10 +99,7 @@ async def main():
             print("Press Ctrl+C to stop the bot")
             
             # Wait for stop signal
-            try:
-                await stop_event.wait()
-            except asyncio.CancelledError:
-                pass
+            await stop_event.wait()
 
     except Exception as e:
         logger.error(f"Error: {e}", exc_info=True)
@@ -126,39 +122,26 @@ async def main():
 
 def handle_interrupt():
     """Handle keyboard interrupt"""
-    asyncio.get_event_loop().create_task(stop_signal_handler())
+    asyncio.get_event_loop().create_task(shutdown())
 
 if __name__ == '__main__':
     try:
-        # Set up signal handlers
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        # Set up signal handlers based on platform
+        if sys.platform == 'win32':
+            # Windows signal handling
+            signal.signal(signal.SIGINT, lambda s, f: handle_interrupt())
+        else:
+            # Unix signal handling
+            loop = asyncio.get_event_loop()
+            for s in (signal.SIGTERM, signal.SIGINT):
+                loop.add_signal_handler(
+                    s, lambda s=s: asyncio.create_task(shutdown(signal=s))
+                )
         
-        # Handle signals
-        signals = (signal.SIGTERM, signal.SIGINT)
-        for s in signals:
-            loop.add_signal_handler(
-                s, lambda s=s: asyncio.create_task(shutdown(loop, signal=s))
-            )
-            
         # Run the bot
-        loop.run_until_complete(main())
+        asyncio.run(main())
     except KeyboardInterrupt:
         print("\nBot stopped by user")
     except Exception as e:
         print(f"Fatal error: {e}")
         logger.error(f"Fatal error: {e}", exc_info=True)
-    finally:
-        loop.close()
-
-async def shutdown(loop, signal=None):
-    """Cleanup tasks tied to the service's shutdown."""
-    if signal:
-        logger.info(f"Received exit signal {signal.name}")
-    
-    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-    [task.cancel() for task in tasks]
-    
-    logger.info(f"Cancelling {len(tasks)} outstanding tasks")
-    await asyncio.gather(*tasks, return_exceptions=True)
-    loop.stop()
