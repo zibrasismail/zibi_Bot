@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import os
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from config import TELEGRAM_BOT_TOKEN, DATABASE_URL
@@ -36,51 +37,67 @@ async def log_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     logger.debug(f"Received update: {update}")
 
 async def main():
-    print("Starting the bot...")
-    logger.info("Bot is initializing...")
+    try:
+        print("Starting the bot...")
+        logger.info("Bot is initializing...")
 
-    # Initialize database
-    print("Connecting to database...")
-    db_pool = await create_pool()
-    await create_messages_table(db_pool)
-    print("Database connected and table created.")
+        # Initialize database
+        print("Connecting to database...")
+        db_pool = await create_pool()
+        await create_messages_table(db_pool)
+        print("Database connected and table created.")
 
-    # Initialize application
-    print("Initializing Telegram bot application...")
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    application.bot_data['db_pool'] = db_pool
-    application.bot_data['message_cache'] = create_message_cache()
+        # Initialize application
+        print("Initializing Telegram bot application...")
+        application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+        application.bot_data['db_pool'] = db_pool
+        application.bot_data['message_cache'] = create_message_cache()
 
-    # Add handlers
-    application.add_handler(MessageHandler(filters.ALL, log_update), group=-1)  # Log all updates
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("Handlers added successfully")
+        # Add handlers
+        application.add_handler(MessageHandler(filters.ALL, log_update), group=-1)  # Log all updates
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        application.add_error_handler(error_handler)
+        print("Handlers added successfully")
 
-    # Add error handler
-    application.add_error_handler(error_handler)
-    print("Error handler added")
+        # Initialize the application
+        await application.initialize()
 
-    print("Removing webhook...")
-    await application.bot.delete_webhook()
-    print("Webhook removed")
+        # Check if we're running on Railway
+        if os.getenv('RAILWAY_PUBLIC_DOMAIN'):
+            # Production mode (Railway)
+            port = int(os.getenv('PORT', 8080))
+            app_url = os.getenv('RAILWAY_PUBLIC_DOMAIN')
+            print(f"Setting up webhook on {app_url}")
+            
+            await application.bot.set_webhook(
+                url=f"{app_url}/webhook",
+                drop_pending_updates=True
+            )
+            
+            await application.start()
+            await application.run_webhook(
+                listen="0.0.0.0",
+                port=port,
+                webhook_url=f"{app_url}/webhook"
+            )
+        else:
+            # Local development mode
+            print("Running in local mode (polling)")
+            await application.bot.delete_webhook(drop_pending_updates=True)
+            await application.start()
+            await application.run_polling(drop_pending_updates=True)
 
-    print("Starting polling...")
-    await application.initialize()
-    await application.start()
-    print("Polling...")
-
-    # Custom polling method
-    offset = 0
-    while True:
-        try:
-            updates = await application.bot.get_updates(offset=offset, timeout=30)
-            for update in updates:
-                offset = update.update_id + 1
-                await application.process_update(update)
-        except Exception as e:
-            logger.error(f"Error in polling: {e}", exc_info=True)
-        await asyncio.sleep(1)
+    except Exception as e:
+        logger.error(f"Error in main: {e}", exc_info=True)
+        raise
+    finally:
+        # Cleanup
+        if 'application' in locals():
+            await application.stop()
+            await application.shutdown()
+        if 'db_pool' in locals():
+            await db_pool.close()
 
 if __name__ == '__main__':
     try:
