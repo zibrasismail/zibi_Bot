@@ -42,11 +42,15 @@ async def health_check(request):
 
 async def webhook_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
+        logger.info(f"Received webhook update: {update}")
         if update.message:
+            logger.info(f"Processing message: {update.message.text}")
             await handle_message(update, context)
+            logger.info("Message processed successfully")
     except Exception as e:
         logger.error(f"Error in webhook handler: {e}", exc_info=True)
-        return {"statusCode": 200}  # Always return 200 to Telegram
+    finally:
+        return web.Response(status=200)
 
 async def main():
     try:
@@ -110,9 +114,9 @@ async def main():
             print(f"Starting webhook server on port {port}")
             app = web.Application()
             app.router.add_get('/health', health_check)
+            app.router.add_post('/webhook', webhook_handler)
             
-            application.add_handler(MessageHandler(filters.ALL, webhook_handler))
-            
+            print("Starting webhook server...")
             await application.run_webhook(
                 listen="0.0.0.0",
                 port=port,
